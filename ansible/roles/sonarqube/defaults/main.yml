@@ -1,0 +1,16 @@
+---
+# PostgreSQL Configuration
+sonarqube_db_name: sonarqube
+sonarqube_db_user: sonaruser
+sonarqube_db_password: "ChangeMeNow!2024"
+
+# SonarQube Configuration
+sonarqube_version: "25.2.0.102705"
+sonarqube_port: 9000
+
+# SonarScanner Configuration
+sonarscanner_version: "7.0.1.4817"
+install_sonarscanner: false
+
+# Firewall Configuration
+configure_firewall: true

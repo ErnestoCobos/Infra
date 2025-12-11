@@ -1,0 +1,496 @@
+name: Server Updates
+
+on:
+  # Scheduled: Monday at 12:00 PM CST (18:00 UTC)
+  schedule:
+    - cron: '0 18 * * 1'
+
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target hosts (group or host)'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - sonarqube
+      mode:
+        description: 'Execution mode'
+        required: true
+        default: 'smart'
+        type: choice
+        options:
+          - smart         # Check first, apply only if NO reboot needed
+          - check         # Only check what updates are available
+          - apply         # Apply updates without reboot
+          - apply-reboot  # Apply updates AND reboot if needed
+
+env:
+  ANSIBLE_FORCE_COLOR: "true"
+  ANSIBLE_HOST_KEY_CHECKING: "false"
+
+jobs:
+  check-updates:
+    name: Check Available Updates
+    runs-on: ubuntu-latest
+    outputs:
+      reboot_required: \${{ steps.check.outputs.reboot_required }}
+      updates_available: \${{ steps.check.outputs.updates_available }}
+      update_count: \${{ steps.check.outputs.update_count }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: \${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: \${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          version: latest
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: |
+          pip install ansible
+          ansible-galaxy collection install -r ansible/requirements.yml
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "\${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Create logs directory
+        run: mkdir -p ansible/logs/updates
+
+      - name: Check for updates
+        id: check
+        run: |
+          cd ansible
+
+          # Create check playbook inline
+          cat > /tmp/check-updates.yml << 'EOF'
+          ---
+          - name: Check for available updates
+            hosts: "{{ target | default('all') }}"
+            gather_facts: true
+            become: true
+
+            tasks:
+              - name: Update apt cache
+                apt:
+                  update_cache: yes
+                  cache_valid_time: 3600
+
+              - name: Get list of upgradable packages
+                command: apt list --upgradable
+                register: upgradable
+                changed_when: false
+
+              - name: Check if reboot is required
+                stat:
+                  path: /var/run/reboot-required
+                register: reboot_file
+
+              - name: Get reboot required packages
+                command: cat /var/run/reboot-required.pkgs
+                register: reboot_pkgs
+                ignore_errors: true
+                changed_when: false
+                when: reboot_file.stat.exists
+
+              - name: Set facts
+                set_fact:
+                  update_count: "{{ upgradable.stdout_lines | length - 1 }}"
+                  reboot_required: "{{ reboot_file.stat.exists }}"
+                  upgradable_packages: "{{ upgradable.stdout }}"
+                  reboot_packages: "{{ reboot_pkgs.stdout | default('N/A') }}"
+
+              - name: Display update summary
+                debug:
+                  msg: |
+                    ====================================
+                    Host: {{ inventory_hostname }}
+                    Updates available: {{ update_count }}
+                    Reboot required: {{ reboot_required }}
+                    {% if reboot_required %}
+                    Reboot triggered by: {{ reboot_packages }}
+                    {% endif %}
+                    ====================================
+                    Upgradable packages:
+                    {{ upgradable_packages }}
+
+              - name: Save check results to file
+                copy:
+                  content: |
+                    {
+                      "hostname": "{{ inventory_hostname }}",
+                      "timestamp": "{{ ansible_date_time.iso8601 }}",
+                      "update_count": {{ update_count }},
+                      "reboot_required": {{ reboot_required | lower }},
+                      "reboot_packages": "{{ reboot_packages | default('') }}",
+                      "kernel": "{{ ansible_kernel }}",
+                      "os": "{{ ansible_distribution }} {{ ansible_distribution_version }}"
+                    }
+                  dest: "/tmp/update-check-{{ inventory_hostname }}.json"
+                delegate_to: localhost
+                become: false
+          EOF
+
+          # Run check playbook
+          ansible-playbook /tmp/check-updates.yml \
+            -e "target=\${{ github.event.inputs.target || 'all' }}" \
+            2>&1 | tee logs/updates/check-output.log
+
+          # Parse results
+          REBOOT_REQUIRED="false"
+          UPDATES_AVAILABLE="false"
+          UPDATE_COUNT=0
+
+          for f in /tmp/update-check-*.json; do
+            if [ -f "\$f" ]; then
+              if grep -q '"reboot_required": true' "\$f"; then
+                REBOOT_REQUIRED="true"
+              fi
+              count=\$(grep -o '"update_count": [0-9]*' "\$f" | grep -o '[0-9]*')
+              if [ "\$count" -gt 0 ]; then
+                UPDATES_AVAILABLE="true"
+                UPDATE_COUNT=\$((UPDATE_COUNT + count))
+              fi
+              # Copy to logs
+              cp "\$f" logs/updates/
+            fi
+          done
+
+          echo "reboot_required=\$REBOOT_REQUIRED" >> \$GITHUB_OUTPUT
+          echo "updates_available=\$UPDATES_AVAILABLE" >> \$GITHUB_OUTPUT
+          echo "update_count=\$UPDATE_COUNT" >> \$GITHUB_OUTPUT
+
+          echo "📊 Check Results:"
+          echo "   Reboot Required: \$REBOOT_REQUIRED"
+          echo "   Updates Available: \$UPDATES_AVAILABLE"
+          echo "   Total Update Count: \$UPDATE_COUNT"
+
+      - name: Upload check logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-logs-\${{ github.run_number }}
+          path: ansible/logs/updates/
+          retention-days: 90
+
+      - name: Generate check summary
+        run: |
+          echo "## 🔍 Update Check Report" >> \$GITHUB_STEP_SUMMARY
+          echo "" >> \$GITHUB_STEP_SUMMARY
+          echo "**Date:** \$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> \$GITHUB_STEP_SUMMARY
+          echo "**Target:** \${{ github.event.inputs.target || 'all' }}" >> \$GITHUB_STEP_SUMMARY
+          echo "**Mode:** \${{ github.event.inputs.mode || 'smart' }}" >> \$GITHUB_STEP_SUMMARY
+          echo "" >> \$GITHUB_STEP_SUMMARY
+          echo "### Results" >> \$GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> \$GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> \$GITHUB_STEP_SUMMARY
+          echo "| Updates Available | \${{ steps.check.outputs.update_count }} |" >> \$GITHUB_STEP_SUMMARY
+          echo "| Reboot Required | \${{ steps.check.outputs.reboot_required }} |" >> \$GITHUB_STEP_SUMMARY
+          echo "" >> \$GITHUB_STEP_SUMMARY
+
+          # Show individual server results
+          echo "### Server Details" >> \$GITHUB_STEP_SUMMARY
+          for f in ansible/logs/updates/update-check-*.json; do
+            if [ -f "\$f" ]; then
+              echo "<details>" >> \$GITHUB_STEP_SUMMARY
+              echo "<summary>\$(basename "\$f" .json | sed 's/update-check-//')</summary>" >> \$GITHUB_STEP_SUMMARY
+              echo "" >> \$GITHUB_STEP_SUMMARY
+              echo '\`\`\`json' >> \$GITHUB_STEP_SUMMARY
+              cat "\$f" >> \$GITHUB_STEP_SUMMARY
+              echo '\`\`\`' >> \$GITHUB_STEP_SUMMARY
+              echo "</details>" >> \$GITHUB_STEP_SUMMARY
+            fi
+          done
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
+
+  apply-updates:
+    name: Apply Updates
+    runs-on: ubuntu-latest
+    needs: check-updates
+    if: |
+      github.event.inputs.mode == 'apply' ||
+      github.event.inputs.mode == 'apply-reboot' ||
+      (
+        (github.event.inputs.mode == 'smart' || github.event.inputs.mode == '') &&
+        needs.check-updates.outputs.updates_available == 'true' &&
+        needs.check-updates.outputs.reboot_required == 'false'
+      )
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: \${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: \${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          version: latest
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: |
+          pip install ansible
+          ansible-galaxy collection install -r ansible/requirements.yml
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "\${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Create logs directory
+        run: mkdir -p ansible/logs/updates
+
+      - name: Determine reboot setting
+        id: reboot
+        run: |
+          MODE="\${{ github.event.inputs.mode || 'smart' }}"
+          if [ "\$MODE" = "apply-reboot" ]; then
+            echo "auto_reboot=true" >> \$GITHUB_OUTPUT
+          else
+            echo "auto_reboot=false" >> \$GITHUB_OUTPUT
+          fi
+
+      - name: Apply updates
+        run: |
+          cd ansible
+
+          echo "🚀 Applying updates..."
+          echo "   Auto Reboot: \${{ steps.reboot.outputs.auto_reboot }}"
+
+          ansible-playbook playbooks/update.yml \
+            --limit "\${{ github.event.inputs.target || 'all' }}" \
+            -e "auto_reboot=\${{ steps.reboot.outputs.auto_reboot }}" \
+            2>&1 | tee logs/updates/apply-output.log
+
+      - name: Upload apply logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apply-logs-\${{ github.run_number }}
+          path: ansible/logs/updates/
+          retention-days: 90
+
+      - name: Generate apply summary
+        if: always()
+        run: |
+          echo "## ✅ Updates Applied" >> \$GITHUB_STEP_SUMMARY
+          echo "" >> \$GITHUB_STEP_SUMMARY
+          echo "**Target:** \${{ github.event.inputs.target || 'all' }}" >> \$GITHUB_STEP_SUMMARY
+          echo "**Auto Reboot:** \${{ steps.reboot.outputs.auto_reboot }}" >> \$GITHUB_STEP_SUMMARY
+          echo "" >> \$GITHUB_STEP_SUMMARY
+
+          if [ -d "ansible/logs/updates" ]; then
+            for logfile in ansible/logs/updates/*.log; do
+              if [ -f "\$logfile" ]; then
+                echo "<details>" >> \$GITHUB_STEP_SUMMARY
+                echo "<summary>📄 \$(basename "\$logfile")</summary>" >> \$GITHUB_STEP_SUMMARY
+                echo "" >> \$GITHUB_STEP_SUMMARY
+                echo '\`\`\`' >> \$GITHUB_STEP_SUMMARY
+                tail -100 "\$logfile" >> \$GITHUB_STEP_SUMMARY
+                echo '\`\`\`' >> \$GITHUB_STEP_SUMMARY
+                echo "</details>" >> \$GITHUB_STEP_SUMMARY
+              fi
+            done
+          fi
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
+
+  skip-notification:
+    name: Reboot Required - Manual Action Needed
+    runs-on: ubuntu-latest
+    needs: check-updates
+    if: |
+      (github.event.inputs.mode == 'smart' || github.event.inputs.mode == '') &&
+      needs.check-updates.outputs.reboot_required == 'true' &&
+      needs.check-updates.outputs.updates_available == 'true'
+
+    steps:
+      - name: Notify about pending manual action
+        run: |
+          echo "## ⚠️ Manual Action Required" >> \$GITHUB_STEP_SUMMARY
+          echo "" >> \$GITHUB_STEP_SUMMARY
+          echo "Updates are available but **reboot is required**." >> \$GITHUB_STEP_SUMMARY
+          echo "" >> \$GITHUB_STEP_SUMMARY
+          echo "Automatic updates were **skipped** to avoid unexpected downtime." >> \$GITHUB_STEP_SUMMARY
+          echo "" >> \$GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> \$GITHUB_STEP_SUMMARY
+          echo "1. Review the check logs to see what updates are pending" >> \$GITHUB_STEP_SUMMARY
+          echo "2. Schedule a maintenance window" >> \$GITHUB_STEP_SUMMARY
+          echo "3. Run updates manually with reboot:" >> \$GITHUB_STEP_SUMMARY
+          echo '\`\`\`bash' >> \$GITHUB_STEP_SUMMARY
+          echo './scripts/server-update.sh apply-reboot \${{ github.event.inputs.target || "all" }}' >> \$GITHUB_STEP_SUMMARY
+          echo '\`\`\`' >> \$GITHUB_STEP_SUMMARY
+
+      - name: Generate email content with Gemini and send via Resend
+        if: ${{ secrets.RESEND_API_KEY != '' }}
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          # Prepare context for Gemini
+          CONTEXT="Server updates check completed. Results:
+          - Target servers: ${{ github.event.inputs.target || 'all' }}
+          - Updates available: ${{ needs.check-updates.outputs.update_count }}
+          - Reboot required: YES
+          - Automatic updates were SKIPPED to prevent unexpected downtime.
+          - Action needed: Manual intervention required to apply updates with reboot.
+          - Command to run: ./scripts/server-update.sh apply-reboot
+          - Logs URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Call Gemini to generate email content
+          GEMINI_RESPONSE=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "contents": [{
+                "parts": [{
+                  "text": "You are an infrastructure notification system. Write a professional, urgent email in English about server updates that require a reboot. Be concise but informative. Include all the details provided. Format the response as JSON with two fields: \"subject\" (email subject line with emoji) and \"body\" (HTML formatted email body with professional styling). Use red/warning colors for urgent elements. Context: '"$(echo "$CONTEXT" | tr '\n' ' ' | sed 's/"/\\"/g')"'"
+                }]
+              }],
+              "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 1024
+              }
+            }')
+
+          # Extract subject and body from Gemini response
+          SUBJECT=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text' | grep -o '"subject"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/"subject"[[:space:]]*:[[:space:]]*"//' | sed 's/"$//' || echo "🚨 [URGENT] Server Updates Require Reboot")
+          BODY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text' | sed -n 's/.*"body"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p' | head -1 || echo "<p>Server updates require manual intervention.</p>")
+
+          # Fallback if Gemini fails
+          if [ -z "$SUBJECT" ] || [ "$SUBJECT" = "null" ]; then
+            SUBJECT="🚨 [URGENT] Server Updates Require Reboot - Manual Action Needed"
+          fi
+
+          if [ -z "$BODY" ] || [ "$BODY" = "null" ]; then
+            BODY="<div style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;\"><div style=\"background: #dc2626; color: white; padding: 20px; text-align: center;\"><h1>⚠️ ACTION REQUIRED</h1></div><div style=\"padding: 20px; background: #fef2f2; border: 2px solid #dc2626;\"><h2 style=\"color: #dc2626;\">Server Updates Require Reboot</h2><p>Updates are available that <strong>require a server restart</strong>.</p><p>Automatic updates were <strong>skipped</strong> to prevent unexpected downtime.</p><h3>📋 Details:</h3><ul><li><strong>Target:</strong> ${{ github.event.inputs.target || 'all' }}</li><li><strong>Pending updates:</strong> ${{ needs.check-updates.outputs.update_count }}</li></ul><h3>🔧 Required Action:</h3><pre style=\"background: #1f2937; color: #10b981; padding: 10px;\">./scripts/server-update.sh apply-reboot</pre><p><a href=\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\" style=\"background: #2563eb; color: white; padding: 10px 20px; text-decoration: none;\">📄 View Logs</a></p></div></div>"
+          fi
+
+          # Build recipient array from comma-separated list
+          TO_ARRAY=$(echo "${NOTIFY_EMAIL}" | sed 's/,/","/g')
+
+          # Send email via Resend
+          curl -s -X POST "https://api.resend.com/emails" \
+            -H "Authorization: Bearer ${RESEND_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "from": "'"${EMAIL_FROM}"'",
+              "to": ["'"${TO_ARRAY}"'"],
+              "subject": "'"${SUBJECT}"'",
+              "html": "'"${BODY}"'",
+              "headers": {
+                "X-Priority": "1",
+                "X-MSMail-Priority": "High",
+                "Importance": "High"
+              }
+            }' || true
+
+  notify:
+    name: Send Email Notification
+    runs-on: ubuntu-latest
+    needs: [check-updates, apply-updates]
+    if: always() && needs.apply-updates.result != 'skipped'
+
+    steps:
+      - name: Generate email with Gemini and send via Resend
+        if: ${{ secrets.RESEND_API_KEY != '' }}
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          STATUS="${{ needs.apply-updates.result }}"
+
+          # Prepare context for Gemini
+          if [ "$STATUS" = "success" ]; then
+            MOOD="positive"
+            CONTEXT="Server updates completed SUCCESSFULLY.
+            - Target servers: ${{ github.event.inputs.target || 'all' }}
+            - Mode: ${{ github.event.inputs.mode || 'smart' }}
+            - Updates applied: ${{ needs.check-updates.outputs.update_count }}
+            - All updates were applied without issues.
+            - Logs URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          else
+            MOOD="negative"
+            CONTEXT="Server updates FAILED.
+            - Target servers: ${{ github.event.inputs.target || 'all' }}
+            - Mode: ${{ github.event.inputs.mode || 'smart' }}
+            - Updates attempted: ${{ needs.check-updates.outputs.update_count }}
+            - There was an error during the update process.
+            - Immediate attention required.
+            - Logs URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
+          # Call Gemini to generate email content
+          GEMINI_RESPONSE=$(curl -s "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "contents": [{
+                "parts": [{
+                  "text": "You are an infrastructure notification system. Write a professional email in English about server updates. Mood: '"$MOOD"'. Be concise but informative. Include all details provided. Format response as JSON with \"subject\" (with emoji) and \"body\" (HTML with professional styling). Use green for success, red for failure. Context: '"$(echo "$CONTEXT" | tr '\n' ' ' | sed 's/"/\\"/g')"'"
+                }]
+              }],
+              "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 1024
+              }
+            }')
+
+          # Extract and send (with fallback)
+          SUBJECT=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text' | grep -o '"subject"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/"subject"[[:space:]]*:[[:space:]]*"//' | sed 's/"$//')
+
+          if [ -z "$SUBJECT" ] || [ "$SUBJECT" = "null" ]; then
+            if [ "$STATUS" = "success" ]; then
+              SUBJECT="✅ Server Updates Applied Successfully"
+              BODY="<div style=\"font-family: Arial; max-width: 600px; margin: 0 auto;\"><div style=\"background: #10b981; color: white; padding: 20px; text-align: center;\"><h1>✅ Updates Applied</h1></div><div style=\"padding: 20px; background: #f0fdf4; border: 2px solid #10b981;\"><p>Server updates completed successfully.</p><ul><li>Target: ${{ github.event.inputs.target || 'all' }}</li><li>Updates: ${{ needs.check-updates.outputs.update_count }}</li></ul><p><a href=\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\">View Logs</a></p></div></div>"
+            else
+              SUBJECT="❌ Server Update Failed - Action Required"
+              BODY="<div style=\"font-family: Arial; max-width: 600px; margin: 0 auto;\"><div style=\"background: #dc2626; color: white; padding: 20px; text-align: center;\"><h1>❌ Update Failed</h1></div><div style=\"padding: 20px; background: #fef2f2; border: 2px solid #dc2626;\"><p>There was an error during the update process.</p><p><a href=\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\">View Logs</a></p></div></div>"
+            fi
+          else
+            BODY=$(echo "$GEMINI_RESPONSE" | jq -r '.candidates[0].content.parts[0].text' | sed -n 's/.*"body"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p' | head -1)
+          fi
+
+          # Build recipient array from comma-separated list
+          TO_ARRAY=$(echo "${NOTIFY_EMAIL}" | sed 's/,/","/g')
+
+          curl -s -X POST "https://api.resend.com/emails" \
+            -H "Authorization: Bearer ${RESEND_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "from": "'"${EMAIL_FROM}"'",
+              "to": ["'"${TO_ARRAY}"'"],
+              "subject": "'"${SUBJECT}"'",
+              "html": "'"${BODY}"'",
+              "headers": {
+                "X-Priority": "1",
+                "X-MSMail-Priority": "High",
+                "Importance": "High"
+              }
+            }' || true

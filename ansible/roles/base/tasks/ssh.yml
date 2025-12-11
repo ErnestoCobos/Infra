@@ -1,0 +1,60 @@
+---
+# SSH Hardening for Ubuntu 24.04
+
+- name: Backup original sshd_config
+  ansible.builtin.copy:
+    src: /etc/ssh/sshd_config
+    dest: /etc/ssh/sshd_config.backup
+    remote_src: true
+    force: false
+    mode: '0600'
+
+- name: Configure SSH - Disable root login
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PermitRootLogin'
+    line: "PermitRootLogin {{ 'prohibit-password' if base_ssh_permit_root else 'no' }}"
+  notify: Restart SSH
+
+- name: Configure SSH - Disable password authentication
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PasswordAuthentication'
+    line: "PasswordAuthentication {{ 'yes' if base_ssh_password_auth else 'no' }}"
+  notify: Restart SSH
+
+- name: Configure SSH - Disable empty passwords
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PermitEmptyPasswords'
+    line: "PermitEmptyPasswords no"
+  notify: Restart SSH
+
+- name: Configure SSH - Use only protocol 2
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?Protocol'
+    line: "Protocol 2"
+  notify: Restart SSH
+
+- name: Configure SSH - Set max auth tries
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?MaxAuthTries'
+    line: "MaxAuthTries {{ base_ssh_max_auth_tries }}"
+  notify: Restart SSH
+
+- name: Configure SSH - Disable X11 forwarding
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?X11Forwarding'
+    line: "X11Forwarding no"
+  notify: Restart SSH
+  when: not base_ssh_x11_forwarding
+
+- name: Configure SSH - Set login grace time
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?LoginGraceTime'
+    line: "LoginGraceTime {{ base_ssh_login_grace_time }}"
+  notify: Restart SSH

@@ -1,0 +1,162 @@
+name: Ansible Test (DigitalOcean)
+
+on:
+  workflow_dispatch:
+    inputs:
+      droplet_size:
+        description: 'Droplet size'
+        required: true
+        default: 's-2vcpu-4gb'
+        type: choice
+        options:
+          - 's-1vcpu-2gb'
+          - 's-2vcpu-4gb'
+          - 's-4vcpu-8gb'
+      playbook:
+        description: 'Playbook to test'
+        required: true
+        default: 'sonarqube.yml'
+        type: choice
+        options:
+          - sonarqube.yml
+      destroy_after:
+        description: 'Destroy droplet after test'
+        required: true
+        default: true
+        type: boolean
+
+env:
+  ANSIBLE_FORCE_COLOR: "true"
+  ANSIBLE_HOST_KEY_CHECKING: "false"
+
+jobs:
+  test:
+    name: Test Ansible on DigitalOcean
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Generate SSH key for test
+        run: |
+          ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -C "ansible-test@github-actions"
+
+          # Add SSH key to DigitalOcean
+          doctl compute ssh-key create ansible-test-${{ github.run_id }} \
+            --public-key "$(cat ~/.ssh/id_ed25519.pub)" \
+            --output json > /tmp/ssh_key.json
+
+          echo "SSH_KEY_ID=$(jq -r '.[0].id' /tmp/ssh_key.json)" >> $GITHUB_ENV
+
+      - name: Create test Droplet
+        run: |
+          doctl compute droplet create ansible-test-${{ github.run_id }} \
+            --image ubuntu-24-04-x64 \
+            --size ${{ github.event.inputs.droplet_size }} \
+            --region nyc1 \
+            --ssh-keys ${{ env.SSH_KEY_ID }} \
+            --wait \
+            --output json > /tmp/droplet.json
+
+          DROPLET_IP=$(jq -r '.[0].networks.v4[] | select(.type == "public") | .ip_address' /tmp/droplet.json)
+          DROPLET_ID=$(jq -r '.[0].id' /tmp/droplet.json)
+
+          echo "DROPLET_IP=$DROPLET_IP" >> $GITHUB_ENV
+          echo "DROPLET_ID=$DROPLET_ID" >> $GITHUB_ENV
+          echo "Created droplet with IP: $DROPLET_IP"
+
+      - name: Wait for SSH to be ready
+        run: |
+          echo "Waiting for SSH to be available on ${{ env.DROPLET_IP }}..."
+          for i in {1..30}; do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i ~/.ssh/id_ed25519 root@${{ env.DROPLET_IP }} "echo 'SSH is ready'" 2>/dev/null; then
+              echo "SSH is ready!"
+              break
+            fi
+            echo "Attempt $i: SSH not ready yet, waiting..."
+            sleep 10
+          done
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: |
+          pip install ansible
+          ansible-galaxy collection install -r ansible/requirements.yml
+
+      - name: Create test inventory
+        run: |
+          cat > ansible/inventory/test.yml << EOF
+          ---
+          all:
+            children:
+              sonarqube:
+                hosts:
+                  sonar-test:
+                    ansible_host: ${{ env.DROPLET_IP }}
+                    ansible_user: root
+                    ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+                vars:
+                  sonarqube_db_password: "TestPassword123!"
+          EOF
+
+      - name: Run Ansible Playbook
+        run: |
+          cd ansible
+          ansible-playbook \
+            -i inventory/test.yml \
+            playbooks/${{ github.event.inputs.playbook }} \
+            -v
+
+      - name: Test SonarQube is running
+        run: |
+          echo "Testing SonarQube on http://${{ env.DROPLET_IP }}:9000"
+          for i in {1..12}; do
+            if curl -s -o /dev/null -w "%{http_code}" "http://${{ env.DROPLET_IP }}:9000/api/system/status" | grep -q "200"; then
+              echo "✅ SonarQube is running!"
+              curl -s "http://${{ env.DROPLET_IP }}:9000/api/system/status" | jq .
+              break
+            fi
+            echo "Attempt $i: SonarQube not ready yet, waiting..."
+            sleep 30
+          done
+
+      - name: Output test results
+        run: |
+          echo "============================================"
+          echo "✅ Ansible test completed successfully!"
+          echo ""
+          echo "SonarQube URL: http://${{ env.DROPLET_IP }}:9000"
+          echo "Default credentials: admin / admin"
+          echo "============================================"
+
+      - name: Destroy test Droplet
+        if: ${{ always() && github.event.inputs.destroy_after == 'true' }}
+        run: |
+          echo "Destroying test droplet..."
+          doctl compute droplet delete ${{ env.DROPLET_ID }} --force || true
+          doctl compute ssh-key delete ${{ env.SSH_KEY_ID }} --force || true
+          echo "Cleanup completed."
+
+      - name: Keep Droplet running (manual cleanup required)
+        if: ${{ github.event.inputs.destroy_after == 'false' }}
+        run: |
+          echo "============================================"
+          echo "⚠️  Droplet kept running for manual testing"
+          echo ""
+          echo "Droplet IP: ${{ env.DROPLET_IP }}"
+          echo "Droplet ID: ${{ env.DROPLET_ID }}"
+          echo ""
+          echo "To destroy manually:"
+          echo "  doctl compute droplet delete ${{ env.DROPLET_ID }}"
+          echo "  doctl compute ssh-key delete ${{ env.SSH_KEY_ID }}"
+          echo "============================================"

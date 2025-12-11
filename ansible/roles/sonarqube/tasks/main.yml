@@ -1,0 +1,21 @@
+---
+- name: Include PostgreSQL tasks
+  ansible.builtin.include_tasks: postgresql.yml
+  tags: [postgresql]
+
+- name: Include Java tasks
+  ansible.builtin.include_tasks: java.yml
+  tags: [java]
+
+- name: Include SonarQube installation tasks
+  ansible.builtin.include_tasks: install.yml
+  tags: [install]
+
+- name: Include SonarQube configuration tasks
+  ansible.builtin.include_tasks: configure.yml
+  tags: [configure]
+
+- name: Include SonarScanner tasks
+  ansible.builtin.include_tasks: scanner.yml
+  tags: [scanner]
+  when: install_sonarscanner | default(false)

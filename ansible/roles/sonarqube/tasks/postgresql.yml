@@ -1,0 +1,53 @@
+---
+- name: Install PostgreSQL
+  ansible.builtin.apt:
+    name:
+      - postgresql
+      - postgresql-contrib
+      - python3-psycopg2
+    state: present
+
+- name: Ensure PostgreSQL is started and enabled
+  ansible.builtin.systemd:
+    name: postgresql
+    state: started
+    enabled: true
+
+- name: Create SonarQube PostgreSQL user
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_user:
+    name: "{{ sonarqube_db_user }}"
+    password: "{{ sonarqube_db_password }}"
+    role_attr_flags: LOGIN
+    state: present
+
+- name: Create SonarQube database
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_db:
+    name: "{{ sonarqube_db_name }}"
+    owner: "{{ sonarqube_db_user }}"
+    encoding: UTF-8
+    state: present
+
+- name: Grant privileges on database
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_privs:
+    database: "{{ sonarqube_db_name }}"
+    privs: ALL
+    type: database
+    role: "{{ sonarqube_db_user }}"
+    state: present
+
+- name: Grant privileges on public schema
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_privs:
+    database: "{{ sonarqube_db_name }}"
+    privs: ALL
+    type: schema
+    objs: public
+    role: "{{ sonarqube_db_user }}"
+    state: present

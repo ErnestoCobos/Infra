@@ -1,0 +1,42 @@
+---
+- name: Configure SonarQube properties
+  ansible.builtin.template:
+    src: sonar.properties.j2
+    dest: /opt/sonarqube/conf/sonar.properties
+    owner: sonarqube
+    group: sonarqube
+    mode: '0600'
+  notify: Restart SonarQube
+
+- name: Create SonarQube systemd service
+  ansible.builtin.template:
+    src: sonarqube.service.j2
+    dest: /etc/systemd/system/sonarqube.service
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart SonarQube
+
+- name: Ensure systemd is reloaded
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable and start SonarQube service
+  ansible.builtin.systemd:
+    name: sonarqube
+    state: started
+    enabled: true
+
+- name: Wait for SonarQube to start
+  ansible.builtin.wait_for:
+    port: "{{ sonarqube_port }}"
+    delay: 30
+    timeout: 300
+    state: started
+
+- name: Configure UFW for SonarQube
+  community.general.ufw:
+    rule: allow
+    port: "{{ sonarqube_port }}"
+    proto: tcp
+  when: configure_firewall | default(true)

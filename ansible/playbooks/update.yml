@@ -1,0 +1,157 @@
+---
+- name: Update and maintain Ubuntu servers
+  hosts: all
+  become: true
+
+  vars:
+    # Auto reboot if required
+    auto_reboot: false
+    reboot_timeout: 300
+
+    # Clean up old packages
+    autoremove: true
+    autoclean: true
+
+    # Logging
+    log_dir: "{{ playbook_dir }}/../logs/updates"
+    log_timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+
+  tasks:
+    - name: Create local log directory
+      ansible.builtin.file:
+        path: "{{ log_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Get list of upgradable packages before upgrade
+      ansible.builtin.shell: apt list --upgradable 2>/dev/null | grep -v "Listing" || true
+      register: upgradable_packages
+      changed_when: false
+
+    - name: Upgrade all packages
+      ansible.builtin.apt:
+        upgrade: safe
+      register: apt_upgrade
+
+    - name: Display upgraded packages
+      ansible.builtin.debug:
+        msg: "{{ apt_upgrade.stdout_lines }}"
+      when: apt_upgrade.stdout_lines is defined and apt_upgrade.stdout_lines | length > 0
+
+    - name: Check if reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Display reboot status
+      ansible.builtin.debug:
+        msg: "⚠️  Reboot is required!"
+      when: reboot_required.stat.exists
+
+    - name: Remove unused packages
+      ansible.builtin.apt:
+        autoremove: true
+        purge: true
+      when: autoremove
+
+    - name: Clean apt cache
+      ansible.builtin.apt:
+        autoclean: true
+      when: autoclean
+
+    - name: Reboot if required
+      ansible.builtin.reboot:
+        reboot_timeout: "{{ reboot_timeout }}"
+        msg: "Rebooting due to kernel/system updates"
+      register: reboot_result
+      when:
+        - reboot_required.stat.exists
+        - auto_reboot | bool
+
+    - name: Set reboot status
+      ansible.builtin.set_fact:
+        was_rebooted: "{{ reboot_result.changed | default(false) }}"
+
+    - name: Save update log locally
+      ansible.builtin.copy:
+        content: |
+          ================================================================================
+          UPDATE LOG - {{ inventory_hostname }}
+          ================================================================================
+          Timestamp:        {{ ansible_date_time.iso8601 }}
+          Hostname:         {{ inventory_hostname }}
+          Ansible Host:     {{ ansible_host }}
+          OS:               {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Kernel:           {{ ansible_kernel }}
+
+          UPGRADABLE PACKAGES BEFORE UPDATE:
+          --------------------------------------------------------------------------------
+          {{ upgradable_packages.stdout | default('No packages to upgrade') }}
+
+          UPGRADE RESULT:
+          --------------------------------------------------------------------------------
+          Changed: {{ apt_upgrade.changed }}
+
+          REBOOT STATUS:
+          --------------------------------------------------------------------------------
+          Reboot Required:  {{ reboot_required.stat.exists }}
+          Auto Reboot:      {{ auto_reboot }}
+          Was Rebooted:     {{ was_rebooted }}
+
+          ================================================================================
+        dest: "{{ log_dir }}/{{ inventory_hostname }}_{{ log_timestamp }}.log"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    - name: Save update log as JSON
+      ansible.builtin.copy:
+        content: |
+          {
+            "timestamp": "{{ ansible_date_time.iso8601 }}",
+            "hostname": "{{ inventory_hostname }}",
+            "ansible_host": "{{ ansible_host }}",
+            "os": "{{ ansible_distribution }} {{ ansible_distribution_version }}",
+            "kernel": "{{ ansible_kernel }}",
+            "upgradable_packages": {{ upgradable_packages.stdout_lines | default([]) | to_json }},
+            "packages_upgraded": {{ apt_upgrade.changed }},
+            "reboot_required": {{ reboot_required.stat.exists | lower }},
+            "auto_reboot": {{ auto_reboot | lower }},
+            "was_rebooted": {{ was_rebooted | lower }}
+          }
+        dest: "{{ log_dir }}/{{ inventory_hostname }}_{{ log_timestamp }}.json"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
+
+    - name: Update latest log symlink
+      ansible.builtin.file:
+        src: "{{ inventory_hostname }}_{{ log_timestamp }}.log"
+        dest: "{{ log_dir }}/{{ inventory_hostname }}_latest.log"
+        state: link
+        force: true
+      delegate_to: localhost
+      become: false
+
+    - name: Display summary
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          Server Update Summary
+
+          Host: {{ inventory_hostname }}
+          Packages to upgrade: {{ upgradable_packages.stdout_lines | default([]) | length }}
+          Packages upgraded: {{ apt_upgrade.changed }}
+          Reboot Required: {{ reboot_required.stat.exists }}
+          Was Rebooted: {{ was_rebooted }}
+
+          Log saved to: {{ log_dir }}/{{ inventory_hostname }}_{{ log_timestamp }}.log
+          ============================================

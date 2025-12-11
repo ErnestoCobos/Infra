@@ -1,0 +1,258 @@
+name: Ansible Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ansible/**'
+      - '.github/workflows/ansible-deploy.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ansible/**'
+  workflow_dispatch:
+    inputs:
+      playbook:
+        description: 'Playbook to run'
+        required: true
+        default: 'sonarqube.yml'
+        type: choice
+        options:
+          - sonarqube.yml
+          - common.yml
+      target:
+        description: 'Target hosts (group or host name)'
+        required: true
+        default: 'sonarqube'
+        type: string
+      environment:
+        description: 'Environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      dry_run:
+        description: 'Dry run (check mode)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  ANSIBLE_FORCE_COLOR: "true"
+  ANSIBLE_HOST_KEY_CHECKING: "false"
+  PY_COLORS: "1"
+
+jobs:
+  lint:
+    name: Lint Ansible
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ansible-lint
+        run: pip install ansible-lint
+
+      - name: Run ansible-lint
+        run: |
+          cd ansible
+          ansible-lint playbooks/
+
+  # Dry run en Pull Requests - muestra cambios sin aplicar
+  plan:
+    name: Plan Changes (Dry Run)
+    runs-on: ubuntu-latest
+    needs: [lint]
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          version: latest
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: |
+          pip install ansible
+          ansible-galaxy collection install -r ansible/requirements.yml
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Create inventory from secrets
+        run: |
+          cat > ansible/inventory/hosts.yml << 'EOF'
+          ---
+          all:
+            children:
+              sonarqube:
+                hosts:
+                  sonar-staging:
+                    ansible_host: ${{ secrets.SONAR_STAGING_IP }}
+                    ansible_user: ${{ secrets.ANSIBLE_USER }}
+                vars:
+                  sonarqube_db_password: ${{ secrets.SONARQUBE_DB_PASSWORD }}
+          EOF
+
+      - name: Run Ansible Playbook (Dry Run)
+        id: plan
+        run: |
+          cd ansible
+          echo "## 📋 Ansible Plan - Changes to be applied" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```diff' >> $GITHUB_STEP_SUMMARY
+          ansible-playbook \
+            playbooks/sonarqube.yml \
+            --check \
+            --diff 2>&1 | tee /tmp/ansible-output.txt || true
+          cat /tmp/ansible-output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Comment PR with plan
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('/tmp/ansible-output.txt', 'utf8');
+
+            // Truncate if too long
+            const maxLength = 60000;
+            const truncated = output.length > maxLength
+              ? output.substring(0, maxLength) + '\n... (truncated)'
+              : output;
+
+            const body = `## 🔍 Ansible Dry Run Results
+
+            This is a preview of changes that will be applied when this PR is merged.
+
+            <details>
+            <summary>📋 Click to see Ansible output</summary>
+
+            \`\`\`diff
+            ${truncated}
+            \`\`\`
+
+            </details>
+
+            > ⚠️ **No changes have been applied.** This is a dry run only.
+            > Changes will be applied automatically when merged to main.`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_rsa
+
+  # Deploy real en push a main o manual
+  deploy:
+    name: Deploy with Ansible
+    runs-on: ubuntu-latest
+    needs: [lint]
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    environment: ${{ github.event.inputs.environment || 'staging' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          version: latest
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: |
+          pip install ansible
+          ansible-galaxy collection install -r ansible/requirements.yml
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+          # Add known hosts for Tailscale IPs (optional, we disable host key checking)
+          touch ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Create inventory from secrets
+        run: |
+          cat > ansible/inventory/hosts.yml << 'EOF'
+          ---
+          all:
+            children:
+              sonarqube:
+                hosts:
+                  sonar-staging:
+                    ansible_host: ${{ secrets.SONAR_STAGING_IP }}
+                    ansible_user: ${{ secrets.ANSIBLE_USER }}
+                  sonar-production:
+                    ansible_host: ${{ secrets.SONAR_PRODUCTION_IP }}
+                    ansible_user: ${{ secrets.ANSIBLE_USER }}
+                vars:
+                  sonarqube_db_password: ${{ secrets.SONARQUBE_DB_PASSWORD }}
+          EOF
+
+      - name: Test Tailscale connectivity
+        run: |
+          echo "Testing connectivity to target hosts..."
+          tailscale status
+          # Ping test (optional)
+          # ping -c 3 ${{ secrets.SONAR_STAGING_IP }} || true
+
+      - name: Run Ansible Playbook (Dry Run)
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          cd ansible
+          ansible-playbook \
+            playbooks/${{ github.event.inputs.playbook || 'sonarqube.yml' }} \
+            --limit ${{ github.event.inputs.target || 'sonarqube' }} \
+            --check \
+            --diff
+
+      - name: Run Ansible Playbook
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        run: |
+          cd ansible
+          ansible-playbook \
+            playbooks/${{ github.event.inputs.playbook || 'sonarqube.yml' }} \
+            --limit ${{ github.event.inputs.target || 'sonarqube' }}
+
+      - name: Cleanup SSH key
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_rsa

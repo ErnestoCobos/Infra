@@ -1,0 +1,78 @@
+---
+- name: Install Tailscale and Auto-Join
+  hosts: all
+  become: true
+
+  vars:
+    # Pasa la auth key como variable: -e "tailscale_auth_key=tskey-auth-xxx"
+    tailscale_auth_key: "{{ lookup('env', 'TAILSCALE_AUTH_KEY') }}"
+
+  tasks:
+    - name: Check if Tailscale is already installed
+      ansible.builtin.command: which tailscale
+      register: tailscale_installed
+      ignore_errors: true
+      changed_when: false
+
+    - name: Add Tailscale GPG key
+      ansible.builtin.apt_key:
+        url: https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg
+        state: present
+      when: tailscale_installed.rc != 0
+
+    - name: Add Tailscale repository
+      ansible.builtin.apt_repository:
+        repo: "deb https://pkgs.tailscale.com/stable/ubuntu noble main"
+        state: present
+        filename: tailscale
+      when: tailscale_installed.rc != 0
+
+    - name: Install Tailscale
+      ansible.builtin.apt:
+        name: tailscale
+        state: present
+        update_cache: true
+      when: tailscale_installed.rc != 0
+
+    - name: Enable and start tailscaled
+      ansible.builtin.systemd:
+        name: tailscaled
+        state: started
+        enabled: true
+
+    - name: Check Tailscale status
+      ansible.builtin.command: tailscale status
+      register: tailscale_status
+      ignore_errors: true
+      changed_when: false
+
+    - name: Authenticate Tailscale
+      ansible.builtin.command: >
+        tailscale up
+        --authkey={{ tailscale_auth_key }}
+        --ssh
+        --accept-routes
+      when:
+        - tailscale_auth_key | length > 0
+        - "'Logged out' in tailscale_status.stdout or tailscale_status.rc != 0"
+      register: tailscale_up
+
+    - name: Get Tailscale IP
+      ansible.builtin.command: tailscale ip -4
+      register: tailscale_ip
+      changed_when: false
+
+    - name: Display Tailscale info
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          Tailscale installed and connected!
+
+          Tailscale IP: {{ tailscale_ip.stdout }}
+
+          You can now connect via:
+            ssh {{ ansible_user }}@{{ tailscale_ip.stdout }}
+
+          Or using Tailscale SSH:
+            ssh root@{{ inventory_hostname }}
+          ============================================

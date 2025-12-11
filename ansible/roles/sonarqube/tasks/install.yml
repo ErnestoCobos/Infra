@@ -1,0 +1,46 @@
+---
+- name: Create sonarqube system user
+  ansible.builtin.user:
+    name: sonarqube
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+    state: present
+
+- name: Check if SonarQube is already installed
+  ansible.builtin.stat:
+    path: /opt/sonarqube
+  register: sonarqube_installed
+
+- name: Download SonarQube
+  ansible.builtin.get_url:
+    url: "https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-{{ sonarqube_version }}.zip"
+    dest: /tmp/sonarqube-{{ sonarqube_version }}.zip
+    mode: '0644'
+  when: not sonarqube_installed.stat.exists
+
+- name: Extract SonarQube
+  ansible.builtin.unarchive:
+    src: /tmp/sonarqube-{{ sonarqube_version }}.zip
+    dest: /tmp
+    remote_src: true
+  when: not sonarqube_installed.stat.exists
+
+- name: Move SonarQube to /opt
+  ansible.builtin.command:
+    cmd: mv /tmp/sonarqube-{{ sonarqube_version }} /opt/sonarqube
+    creates: /opt/sonarqube
+  when: not sonarqube_installed.stat.exists
+
+- name: Set ownership of SonarQube directory
+  ansible.builtin.file:
+    path: /opt/sonarqube
+    owner: sonarqube
+    group: sonarqube
+    recurse: true
+    state: directory
+
+- name: Clean up downloaded archive
+  ansible.builtin.file:
+    path: /tmp/sonarqube-{{ sonarqube_version }}.zip
+    state: absent

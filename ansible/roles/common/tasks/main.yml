@@ -1,0 +1,41 @@
+---
+- name: Update all packages
+  ansible.builtin.apt:
+    upgrade: safe
+    update_cache: true
+  when: ansible_os_family == "Debian"
+
+- name: Install common packages
+  ansible.builtin.apt:
+    name:
+      - curl
+      - wget
+      - unzip
+      - gnupg
+      - software-properties-common
+      - apt-transport-https
+      - ca-certificates
+    state: present
+  when: ansible_os_family == "Debian"
+
+- name: Set timezone
+  community.general.timezone:
+    name: UTC
+
+- name: Configure system limits for SonarQube
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/99-sonarqube.conf
+    content: |
+      sonarqube   -   nofile   131072
+      sonarqube   -   nproc    8192
+    mode: '0644'
+
+- name: Configure sysctl for Elasticsearch
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+  loop:
+    - { name: 'vm.max_map_count', value: '524288' }
+    - { name: 'fs.file-max', value: '131072' }

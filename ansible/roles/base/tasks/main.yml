@@ -1,0 +1,91 @@
+---
+# Base role for Ubuntu 24.04 servers
+# Handles: updates, essential packages, timezone, users, SSH hardening
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Upgrade all packages
+  ansible.builtin.apt:
+    upgrade: safe
+  when: base_upgrade_packages | default(true)
+
+- name: Install essential packages
+  ansible.builtin.apt:
+    name: "{{ base_essential_packages }}"
+    state: present
+
+- name: Set timezone
+  community.general.timezone:
+    name: "{{ base_timezone }}"
+
+- name: Set hostname
+  ansible.builtin.hostname:
+    name: "{{ base_hostname | default(inventory_hostname) }}"
+  when: base_hostname is defined or base_set_hostname | default(false)
+
+- name: Configure /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1'
+    line: "127.0.1.1 {{ base_hostname | default(inventory_hostname) }}"
+    state: present
+  when: base_hostname is defined or base_set_hostname | default(false)
+
+- name: Create admin users
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    groups: "{{ item.groups | default('sudo') }}"
+    shell: "{{ item.shell | default('/bin/bash') }}"
+    create_home: true
+    state: present
+  loop: "{{ base_users }}"
+  when: base_users is defined
+
+- name: Add SSH keys for users
+  ansible.posix.authorized_key:
+    user: "{{ item.name }}"
+    key: "{{ item.ssh_key }}"
+    state: present
+  loop: "{{ base_users }}"
+  when:
+    - base_users is defined
+    - item.ssh_key is defined
+
+- name: Configure sudoers for passwordless sudo
+  ansible.builtin.lineinfile:
+    path: /etc/sudoers.d/{{ item.name }}
+    line: "{{ item.name }} ALL=(ALL) NOPASSWD:ALL"
+    create: true
+    mode: '0440'
+    validate: 'visudo -cf %s'
+  loop: "{{ base_users }}"
+  when:
+    - base_users is defined
+    - item.passwordless_sudo | default(false)
+
+- name: Include SSH hardening tasks
+  ansible.builtin.include_tasks: ssh.yml
+  when: base_harden_ssh | default(false)
+
+- name: Include firewall tasks
+  ansible.builtin.include_tasks: firewall.yml
+  when: base_configure_firewall | default(false)
+
+- name: Check if reboot is required
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: reboot_required
+
+- name: Notify if reboot required
+  ansible.builtin.debug:
+    msg: "⚠️  Reboot is required on {{ inventory_hostname }}"
+  when: reboot_required.stat.exists
+
+- name: Remove unused packages
+  ansible.builtin.apt:
+    autoremove: true
+    purge: true
+  when: base_autoremove | default(true)

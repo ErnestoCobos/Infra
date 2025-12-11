@@ -1,0 +1,19 @@
+# Ansible
+*.retry
+logs/
+.vault_pass
+
+# Secrets
+*.env
+!.env.example
+
+# Temporary files
+*.tmp
+*.bak
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store

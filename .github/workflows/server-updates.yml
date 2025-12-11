@@ -1,9 +1,9 @@
 name: Server Updates
 
 on:
-  # Scheduled: Monday at 12:00 AM CST (06:00 UTC)
+  # Scheduled: Monday at 12:00 PM CDMX (18:00 UTC)
   schedule:
-    - cron: '0 6 * * 1'
+    - cron: '0 18 * * 1'
 
   workflow_dispatch:
     inputs:

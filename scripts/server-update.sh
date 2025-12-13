@@ -86,7 +86,7 @@ get_status() {
     echo ""
     gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 5 \
         --json databaseId,status,conclusion,createdAt,headBranch \
-        --jq '.[] | "  \(.databaseId) | \(.status) | \(.conclusion // "running") | \(.createdAt)"'
+    --jq '.[] | "  \(.databaseId) | \(.status) | \(.conclusion // \"running\") | \(.createdAt)"'
 }
 
 download_logs() {

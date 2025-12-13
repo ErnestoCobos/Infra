@@ -122,10 +122,10 @@
             "os": "{{ ansible_distribution }} {{ ansible_distribution_version }}",
             "kernel": "{{ ansible_kernel }}",
             "upgradable_packages": {{ upgradable_packages.stdout_lines | default([]) | to_json }},
-            "packages_upgraded": {{ apt_upgrade.changed }},
-            "reboot_required": {{ reboot_required.stat.exists | lower }},
-            "auto_reboot": {{ auto_reboot | lower }},
-            "was_rebooted": {{ was_rebooted | lower }}
+            "packages_upgraded": {{ apt_upgrade.changed | to_json }},
+            "reboot_required": {{ reboot_required.stat.exists | to_json }},
+            "auto_reboot": {{ auto_reboot | to_json }},
+            "was_rebooted": {{ was_rebooted | to_json }}
           }
         dest: "{{ log_dir }}/{{ inventory_hostname }}_{{ log_timestamp }}.json"
         mode: '0644'

@@ -55,3 +55,4 @@ temp/
 dist/
 build/
 terraform/terraform
+.secrets

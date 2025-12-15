@@ -96,6 +96,7 @@ jobs:
         env:
           SONARQUBE_DB_PASSWORD: ${{ secrets.SONARQUBE_DB_PASSWORD }}
           SONARQUBE_TUNNEL_TOKEN: ${{ secrets.SONARQUBE_TUNNEL_TOKEN }}
+          ANSIBLE_BECOME_PASSWORD: ${{ secrets.ANSIBLE_BECOME_PASSWORD }}
         run: |
           cd ansible
           echo "## 📋 Ansible Plan - Changes to be applied" >> $GITHUB_STEP_SUMMARY
@@ -173,6 +174,7 @@ jobs:
         env:
           SONARQUBE_DB_PASSWORD: ${{ secrets.SONARQUBE_DB_PASSWORD }}
           SONARQUBE_TUNNEL_TOKEN: ${{ secrets.SONARQUBE_TUNNEL_TOKEN }}
+          ANSIBLE_BECOME_PASSWORD: ${{ secrets.ANSIBLE_BECOME_PASSWORD }}
         run: |
           cd ansible
           EXTRA_VARS=""
@@ -191,6 +193,7 @@ jobs:
         env:
           SONARQUBE_DB_PASSWORD: ${{ secrets.SONARQUBE_DB_PASSWORD }}
           SONARQUBE_TUNNEL_TOKEN: ${{ secrets.SONARQUBE_TUNNEL_TOKEN }}
+          ANSIBLE_BECOME_PASSWORD: ${{ secrets.ANSIBLE_BECOME_PASSWORD }}
         run: |
           cd ansible
           EXTRA_VARS=""

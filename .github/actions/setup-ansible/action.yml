@@ -42,7 +42,7 @@ runs:
         fi
 
         echo "::group::Connecting to Tailscale"
-        sudo tailscale up --authkey="$TS_AUTHKEY" --hostname=${{ inputs.hostname-prefix }}-${{ inputs.run-id }}
+        sudo tailscale up --authkey="$TS_AUTHKEY" --hostname=${{ inputs.hostname-prefix }}-${{ inputs.run-id }} --ephemeral
         echo "::endgroup::"
 
         echo "::group::Tailscale Status"

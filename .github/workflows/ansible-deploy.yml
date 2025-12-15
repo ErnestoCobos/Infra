@@ -21,9 +21,7 @@ on:
           - sonarqube.yml
           - check-sonarqube.yml
           - upgrade-sonarqube.yml
-          - cloudflare-tunnel.yml
           - gateway.yml
-          - common.yml
       target:
         description: 'Target hosts (group or host name)'
         required: true
@@ -97,7 +95,7 @@ jobs:
         id: plan
         env:
           SONARQUBE_DB_PASSWORD: ${{ secrets.SONARQUBE_DB_PASSWORD }}
-          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          SONARQUBE_TUNNEL_TOKEN: ${{ secrets.SONARQUBE_TUNNEL_TOKEN }}
         run: |
           cd ansible
           echo "## 📋 Ansible Plan - Changes to be applied" >> $GITHUB_STEP_SUMMARY
@@ -174,7 +172,7 @@ jobs:
         if: ${{ github.event.inputs.dry_run == 'true' }}
         env:
           SONARQUBE_DB_PASSWORD: ${{ secrets.SONARQUBE_DB_PASSWORD }}
-          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          SONARQUBE_TUNNEL_TOKEN: ${{ secrets.SONARQUBE_TUNNEL_TOKEN }}
         run: |
           cd ansible
           EXTRA_VARS=""
@@ -192,7 +190,7 @@ jobs:
         if: ${{ github.event.inputs.dry_run != 'true' }}
         env:
           SONARQUBE_DB_PASSWORD: ${{ secrets.SONARQUBE_DB_PASSWORD }}
-          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          SONARQUBE_TUNNEL_TOKEN: ${{ secrets.SONARQUBE_TUNNEL_TOKEN }}
         run: |
           cd ansible
           EXTRA_VARS=""

@@ -49,11 +49,6 @@
     state: started
     enabled: true
 
-# === CLOUDFLARE TUNNEL ===
-- name: Include Cloudflare Tunnel tasks
-  ansible.builtin.include_tasks: cloudflared.yml
-  when: enable_cloudflare_tunnel | default(true)
-
 # === FIREWALL ===
 - name: Configure UFW - Allow HTTP
   community.general.ufw:

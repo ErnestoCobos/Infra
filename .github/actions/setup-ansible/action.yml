@@ -28,26 +28,10 @@ runs:
   using: 'composite'
   steps:
     - name: Setup Tailscale
-      shell: bash
-      env:
-        TS_AUTHKEY: ${{ inputs.tailscale-authkey }}
-      run: |
-        echo "::group::Installing Tailscale"
-        curl -fsSL https://tailscale.com/install.sh | sh
-        echo "::endgroup::"
-
-        if [ -z "$TS_AUTHKEY" ]; then
-          echo "::error::TS_AUTHKEY is not set!"
-          exit 1
-        fi
-
-        echo "::group::Connecting to Tailscale"
-        sudo tailscale up --authkey="$TS_AUTHKEY" --hostname=${{ inputs.hostname-prefix }}-${{ inputs.run-id }} --ephemeral
-        echo "::endgroup::"
-
-        echo "::group::Tailscale Status"
-        tailscale status
-        echo "::endgroup::"
+      uses: tailscale/github-action@v3
+      with:
+        authkey: ${{ inputs.tailscale-authkey }}
+        hostname: ${{ inputs.hostname-prefix }}-${{ inputs.run-id }}
 
     - name: Set up Python
       uses: actions/setup-python@v5

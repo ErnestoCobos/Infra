@@ -1,0 +1,42 @@
+# Caddyfile - Managed by Ansible
+# Do not edit manually
+
+# Global options
+{
+{% if caddy_admin_disabled | default(true) %}
+	admin off
+{% endif %}
+	# Use Cloudflare for SSL (tunnel handles it)
+	# For local testing without tunnel, Caddy auto-generates certs
+}
+
+{% for service in gateway_services %}
+# {{ service.name | upper }}
+{{ service.domain }} {
+	reverse_proxy {{ service.upstream }} {
+		# Health checks
+		health_uri /
+		health_interval 30s
+		health_timeout 5s
+
+		# Headers
+		header_up Host {upstream_hostport}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	# Logging
+	log {
+		output file /var/log/caddy/{{ service.name }}.log {
+			roll_size 10mb
+			roll_keep 5
+		}
+	}
+}
+
+{% endfor %}
+# Catch-all for undefined hosts
+:80 {
+	respond "Not Found" 404
+}

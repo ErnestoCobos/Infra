@@ -1,0 +1,52 @@
+---
+- name: Configure Gateway/Proxy Server
+  hosts: gateway
+  become: true
+
+  pre_tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_facts['os_family'] == "Debian"
+
+  roles:
+    - role: common
+      tags: [common]
+    - role: gateway
+      tags: [gateway, caddy, cloudflare]
+
+  post_tasks:
+    - name: Create Caddy log directory
+      ansible.builtin.file:
+        path: /var/log/caddy
+        state: directory
+        owner: caddy
+        group: caddy
+        mode: '0755'
+
+    - name: Display gateway information
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          Gateway Server Configured!
+
+          Services configured:
+          {% for service in gateway_services %}
+          - {{ service.name }}: {{ service.domain }} -> {{ service.upstream }}
+          {% endfor %}
+
+          Cloudflare Tunnel: {{ 'Enabled' if enable_cloudflare_tunnel else 'Disabled' }}
+
+          Next steps:
+          1. Configure DNS in Cloudflare:
+             - Go to your domain's DNS settings
+             - Add CNAME records pointing to your tunnel
+
+          2. Or configure Public Hostname in tunnel:
+             - Cloudflare Zero Trust > Networks > Tunnels
+             - Select your tunnel > Public Hostname
+             - Add hostnames pointing to http://localhost:80
+
+          ============================================
+      tags: [always]

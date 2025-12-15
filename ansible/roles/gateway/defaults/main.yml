@@ -1,0 +1,26 @@
+---
+# Gateway/Proxy Configuration
+
+# Cloudflare Tunnel
+cloudflare_tunnel_token: "{{ lookup('env', 'CLOUDFLARE_TUNNEL_TOKEN') }}"
+
+# Caddy reverse proxy configuration
+# Define your internal services here
+gateway_services:
+  - name: sonarqube
+    domain: "sonarqube.{{ gateway_base_domain }}"
+    upstream: "http://{{ sonarqube_internal_host }}:9000"
+    # Optional: Add Cloudflare Access protection
+    # access_policy: true
+
+# Base domain for services (e.g., example.com)
+gateway_base_domain: "example.com"
+
+# Internal hosts (Tailscale hostnames)
+sonarqube_internal_host: "proxmox-sonarqube"
+
+# Caddy admin API (disable in production)
+caddy_admin_disabled: true
+
+# Enable Cloudflare Tunnel
+enable_cloudflare_tunnel: true

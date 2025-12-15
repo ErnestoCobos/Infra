@@ -1,0 +1,50 @@
+---
+- name: Validate tunnel token is provided
+  ansible.builtin.fail:
+    msg: |
+      cloudflare_tunnel_token is required!
+
+      To get a token:
+      1. Go to Cloudflare Zero Trust dashboard
+      2. Networks > Tunnels > Create a tunnel
+      3. Select "Cloudflared" connector
+      4. Copy the token
+
+      Set: CLOUDFLARE_TUNNEL_TOKEN=<your-token>
+  when: cloudflare_tunnel_token | length == 0
+
+- name: Add Cloudflare GPG key
+  ansible.builtin.get_url:
+    url: https://pkg.cloudflare.com/cloudflare-main.gpg
+    dest: /usr/share/keyrings/cloudflare-main.gpg
+    mode: '0644'
+
+- name: Add Cloudflare repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared {{ ansible_distribution_release }} main"
+    state: present
+    filename: cloudflared
+
+- name: Install cloudflared
+  ansible.builtin.apt:
+    name: cloudflared
+    state: present
+    update_cache: true
+
+- name: Check if cloudflared service exists
+  ansible.builtin.stat:
+    path: /etc/systemd/system/cloudflared.service
+  register: cloudflared_service
+
+- name: Install cloudflared as a service
+  ansible.builtin.command:
+    cmd: cloudflared service install {{ cloudflare_tunnel_token }}
+  when: not cloudflared_service.stat.exists
+  notify: Restart cloudflared
+
+- name: Ensure cloudflared is enabled and started
+  ansible.builtin.systemd:
+    name: cloudflared
+    state: started
+    enabled: true
+    daemon_reload: true

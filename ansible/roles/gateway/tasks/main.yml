@@ -1,0 +1,68 @@
+---
+- name: Install required packages
+  ansible.builtin.apt:
+    name:
+      - curl
+      - gnupg
+      - debian-keyring
+      - debian-archive-keyring
+      - apt-transport-https
+    state: present
+    update_cache: true
+
+# === CADDY INSTALLATION ===
+- name: Add Caddy GPG key
+  ansible.builtin.get_url:
+    url: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+    dest: /usr/share/keyrings/caddy-stable-archive-keyring.asc
+    mode: '0644'
+
+- name: Add Caddy repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.asc] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main"
+    state: present
+    filename: caddy-stable
+
+- name: Install Caddy
+  ansible.builtin.apt:
+    name: caddy
+    state: present
+    update_cache: true
+
+- name: Create Caddy config directory
+  ansible.builtin.file:
+    path: /etc/caddy
+    state: directory
+    mode: '0755'
+
+- name: Configure Caddy
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /etc/caddy/Caddyfile
+    mode: '0644'
+    validate: 'caddy validate --config %s'
+  notify: Reload Caddy
+
+- name: Enable and start Caddy
+  ansible.builtin.systemd:
+    name: caddy
+    state: started
+    enabled: true
+
+# === CLOUDFLARE TUNNEL ===
+- name: Include Cloudflare Tunnel tasks
+  ansible.builtin.include_tasks: cloudflared.yml
+  when: enable_cloudflare_tunnel | default(true)
+
+# === FIREWALL ===
+- name: Configure UFW - Allow HTTP
+  community.general.ufw:
+    rule: allow
+    port: '80'
+    proto: tcp
+
+- name: Configure UFW - Allow HTTPS
+  community.general.ufw:
+    rule: allow
+    port: '443'
+    proto: tcp

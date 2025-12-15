@@ -15,6 +15,7 @@ on:
         options:
           - all
           - sonarqube
+          - gateway
       dry_run:
         description: 'Dry run (check only, no apply)'
         required: false
@@ -34,37 +35,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Tailscale
-        env:
-          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
-        run: |
-          curl -fsSL https://tailscale.com/install.sh | sh
-          if [ -z "$TS_AUTHKEY" ]; then
-            echo "ERROR: TS_AUTHKEY secret is not set!"
-            exit 1
-          fi
-          sudo tailscale up --authkey="$TS_AUTHKEY" --hostname=gha-${{ github.run_id }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Setup Ansible Environment
+        uses: ./.github/actions/setup-ansible
         with:
-          python-version: '3.11'
-
-      - name: Install Ansible
-        run: |
-          pip install ansible
-          ansible-galaxy collection install -r ansible/requirements.yml
-
-      - name: Setup SSH key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-
-      - name: Test Tailscale connectivity
-        run: |
-          echo "Testing Tailscale connection..."
-          tailscale status
+          tailscale-authkey: ${{ secrets.TS_AUTHKEY }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          run-id: ${{ github.run_id }}
+          hostname-prefix: gha-updates
 
       - name: Create logs directory
         run: mkdir -p ansible/logs/updates

@@ -85,47 +85,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Tailscale
-        uses: tailscale/github-action@v2
+      - name: Setup Ansible Environment
+        uses: ./.github/actions/setup-ansible
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-          version: latest
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install Ansible
-        run: |
-          pip install ansible
-          ansible-galaxy collection install -r ansible/requirements.yml
-
-      - name: Setup SSH key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-
-      - name: Create inventory from secrets
-        run: |
-          cat > ansible/inventory/hosts.yml << 'EOF'
-          ---
-          all:
-            children:
-              sonarqube:
-                hosts:
-                  sonar-staging:
-                    ansible_host: ${{ secrets.SONAR_STAGING_IP }}
-                    ansible_user: ${{ secrets.ANSIBLE_USER }}
-                vars:
-                  sonarqube_db_password: ${{ secrets.SONARQUBE_DB_PASSWORD }}
-          EOF
+          tailscale-authkey: ${{ secrets.TS_AUTHKEY }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          run-id: ${{ github.run_id }}
+          hostname-prefix: gha-plan
 
       - name: Run Ansible Playbook (Dry Run)
         id: plan
+        env:
+          SONARQUBE_DB_PASSWORD: ${{ secrets.SONARQUBE_DB_PASSWORD }}
+          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
           cd ansible
           echo "## 📋 Ansible Plan - Changes to be applied" >> $GITHUB_STEP_SUMMARY
@@ -176,7 +148,7 @@ jobs:
 
       - name: Cleanup SSH key
         if: always()
-        run: rm -f ~/.ssh/id_rsa
+        run: rm -f ~/.ssh/id_ed25519
 
   # Deploy real en push a main o manual
   deploy:
@@ -190,61 +162,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Tailscale
-        uses: tailscale/github-action@v2
+      - name: Setup Ansible Environment
+        uses: ./.github/actions/setup-ansible
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-          version: latest
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install Ansible
-        run: |
-          pip install ansible
-          ansible-galaxy collection install -r ansible/requirements.yml
-
-      - name: Setup SSH key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-
-          # Add known hosts for Tailscale IPs (optional, we disable host key checking)
-          touch ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
-
-      - name: Create inventory from secrets
-        run: |
-          cat > ansible/inventory/hosts.yml << 'EOF'
-          ---
-          all:
-            children:
-              sonarqube:
-                hosts:
-                  sonar-staging:
-                    ansible_host: ${{ secrets.SONAR_STAGING_IP }}
-                    ansible_user: ${{ secrets.ANSIBLE_USER }}
-                  sonar-production:
-                    ansible_host: ${{ secrets.SONAR_PRODUCTION_IP }}
-                    ansible_user: ${{ secrets.ANSIBLE_USER }}
-                vars:
-                  sonarqube_db_password: ${{ secrets.SONARQUBE_DB_PASSWORD }}
-          EOF
-
-      - name: Test Tailscale connectivity
-        run: |
-          echo "Testing connectivity to target hosts..."
-          tailscale status
-          # Ping test (optional)
-          # ping -c 3 ${{ secrets.SONAR_STAGING_IP }} || true
+          tailscale-authkey: ${{ secrets.TS_AUTHKEY }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          run-id: ${{ github.run_id }}
+          hostname-prefix: gha-deploy
 
       - name: Run Ansible Playbook (Dry Run)
         if: ${{ github.event.inputs.dry_run == 'true' }}
+        env:
+          SONARQUBE_DB_PASSWORD: ${{ secrets.SONARQUBE_DB_PASSWORD }}
+          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
           cd ansible
           EXTRA_VARS=""
@@ -260,6 +190,9 @@ jobs:
 
       - name: Run Ansible Playbook
         if: ${{ github.event.inputs.dry_run != 'true' }}
+        env:
+          SONARQUBE_DB_PASSWORD: ${{ secrets.SONARQUBE_DB_PASSWORD }}
+          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
           cd ansible
           EXTRA_VARS=""
@@ -273,5 +206,4 @@ jobs:
 
       - name: Cleanup SSH key
         if: always()
-        run: |
-          rm -f ~/.ssh/id_rsa
+        run: rm -f ~/.ssh/id_ed25519

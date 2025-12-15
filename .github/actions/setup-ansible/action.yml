@@ -1,0 +1,82 @@
+name: 'Setup Ansible with Tailscale'
+description: 'Configures Tailscale VPN, Python, Ansible, and SSH for infrastructure automation'
+
+inputs:
+  tailscale-authkey:
+    description: 'Tailscale auth key for VPN connection'
+    required: true
+  ssh-private-key:
+    description: 'SSH private key for server access'
+    required: true
+  ssh-key-name:
+    description: 'SSH key filename (default: id_ed25519)'
+    required: false
+    default: 'id_ed25519'
+  python-version:
+    description: 'Python version to use'
+    required: false
+    default: '3.11'
+  hostname-prefix:
+    description: 'Prefix for ephemeral Tailscale hostname'
+    required: false
+    default: 'gha'
+  run-id:
+    description: 'GitHub run ID for unique hostname'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Tailscale
+      shell: bash
+      env:
+        TS_AUTHKEY: ${{ inputs.tailscale-authkey }}
+      run: |
+        echo "::group::Installing Tailscale"
+        curl -fsSL https://tailscale.com/install.sh | sh
+        echo "::endgroup::"
+
+        if [ -z "$TS_AUTHKEY" ]; then
+          echo "::error::TS_AUTHKEY is not set!"
+          exit 1
+        fi
+
+        echo "::group::Connecting to Tailscale"
+        sudo tailscale up --authkey="$TS_AUTHKEY" --hostname=${{ inputs.hostname-prefix }}-${{ inputs.run-id }}
+        echo "::endgroup::"
+
+        echo "::group::Tailscale Status"
+        tailscale status
+        echo "::endgroup::"
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Ansible
+      shell: bash
+      run: |
+        echo "::group::Installing Ansible"
+        pip install ansible
+        echo "::endgroup::"
+
+        echo "::group::Installing Ansible Collections"
+        if [ -f "ansible/requirements.yml" ]; then
+          ansible-galaxy collection install -r ansible/requirements.yml
+        fi
+        echo "::endgroup::"
+
+    - name: Setup SSH key
+      shell: bash
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ inputs.ssh-private-key }}" > ~/.ssh/${{ inputs.ssh-key-name }}
+        chmod 600 ~/.ssh/${{ inputs.ssh-key-name }}
+        touch ~/.ssh/known_hosts
+        chmod 644 ~/.ssh/known_hosts
+
+outputs:
+  tailscale-ip:
+    description: 'Tailscale IP address of this runner'
+    value: ${{ steps.tailscale-status.outputs.ip }}

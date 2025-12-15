@@ -1,0 +1,83 @@
+---
+- name: Check SonarQube Status
+  hosts: sonarqube
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Get SonarQube service status
+      ansible.builtin.systemd:
+        name: sonarqube
+      register: sonarqube_service
+
+    - name: Get SonarQube API status
+      ansible.builtin.uri:
+        url: "http://localhost:{{ sonarqube_port | default(9000) }}/api/system/status"
+        method: GET
+        return_content: true
+      register: sonarqube_api
+      failed_when: false
+
+    - name: Get SonarQube health
+      ansible.builtin.uri:
+        url: "http://localhost:{{ sonarqube_port | default(9000) }}/api/system/health"
+        method: GET
+        return_content: true
+        url_username: admin
+        url_password: "{{ sonarqube_admin_password | default('admin') }}"
+        force_basic_auth: true
+      register: sonarqube_health
+      failed_when: false
+
+    - name: Get installed version from filesystem
+      ansible.builtin.shell: |
+        if [ -f /opt/sonarqube/lib/sonar-application-*.jar ]; then
+          ls /opt/sonarqube/lib/sonar-application-*.jar | sed 's/.*sonar-application-\(.*\)\.jar/\1/'
+        else
+          echo "unknown"
+        fi
+      register: installed_version
+      changed_when: false
+
+    - name: Get PostgreSQL status
+      ansible.builtin.systemd:
+        name: postgresql
+      register: postgresql_service
+
+    - name: Check disk space
+      ansible.builtin.shell: df -h /opt/sonarqube | tail -1 | awk '{print $5}'
+      register: disk_usage
+      changed_when: false
+
+    - name: Check memory usage
+      ansible.builtin.shell: free -h | grep Mem | awk '{print $3 "/" $2}'
+      register: memory_usage
+      changed_when: false
+
+    - name: Display SonarQube status report
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          SONARQUBE STATUS REPORT
+          ============================================
+          Host: {{ ansible_host }}
+
+          SERVICE STATUS:
+            SonarQube: {{ 'RUNNING' if sonarqube_service.status.ActiveState == 'active' else 'STOPPED' }}
+            PostgreSQL: {{ 'RUNNING' if postgresql_service.status.ActiveState == 'active' else 'STOPPED' }}
+
+          API STATUS:
+            Status: {{ (sonarqube_api.json.status | default('UNREACHABLE')) if sonarqube_api.status == 200 else 'UNREACHABLE' }}
+            Version: {{ (sonarqube_api.json.version | default('N/A')) if sonarqube_api.status == 200 else 'N/A' }}
+
+          HEALTH CHECK:
+            Health: {{ (sonarqube_health.json.health | default('N/A')) if sonarqube_health.status == 200 else 'N/A (requires auth)' }}
+
+          INSTALLED VERSION: {{ installed_version.stdout }}
+
+          SYSTEM RESOURCES:
+            Disk Usage: {{ disk_usage.stdout }}
+            Memory Usage: {{ memory_usage.stdout }}
+
+          ACCESS URL: http://{{ ansible_host }}:{{ sonarqube_port | default(9000) }}
+          ============================================

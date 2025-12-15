@@ -19,6 +19,8 @@ on:
         type: choice
         options:
           - sonarqube.yml
+          - check-sonarqube.yml
+          - upgrade-sonarqube.yml
           - common.yml
       target:
         description: 'Target hosts (group or host name)'
@@ -38,6 +40,11 @@ on:
         required: false
         default: false
         type: boolean
+      sonarqube_version:
+        description: 'SonarQube version (only for upgrade-sonarqube.yml)'
+        required: false
+        default: ''
+        type: string
 
 env:
   ANSIBLE_FORCE_COLOR: "true"
@@ -238,19 +245,29 @@ jobs:
         if: ${{ github.event.inputs.dry_run == 'true' }}
         run: |
           cd ansible
+          EXTRA_VARS=""
+          if [[ "${{ github.event.inputs.playbook }}" == "upgrade-sonarqube.yml" && -n "${{ github.event.inputs.sonarqube_version }}" ]]; then
+            EXTRA_VARS="-e new_version=${{ github.event.inputs.sonarqube_version }}"
+          fi
           ansible-playbook \
             playbooks/${{ github.event.inputs.playbook || 'sonarqube.yml' }} \
             --limit ${{ github.event.inputs.target || 'sonarqube' }} \
             --check \
-            --diff
+            --diff \
+            $EXTRA_VARS
 
       - name: Run Ansible Playbook
         if: ${{ github.event.inputs.dry_run != 'true' }}
         run: |
           cd ansible
+          EXTRA_VARS=""
+          if [[ "${{ github.event.inputs.playbook }}" == "upgrade-sonarqube.yml" && -n "${{ github.event.inputs.sonarqube_version }}" ]]; then
+            EXTRA_VARS="-e new_version=${{ github.event.inputs.sonarqube_version }}"
+          fi
           ansible-playbook \
             playbooks/${{ github.event.inputs.playbook || 'sonarqube.yml' }} \
-            --limit ${{ github.event.inputs.target || 'sonarqube' }}
+            --limit ${{ github.event.inputs.target || 'sonarqube' }} \
+            $EXTRA_VARS
 
       - name: Cleanup SSH key
         if: always()

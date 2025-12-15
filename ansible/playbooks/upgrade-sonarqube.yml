@@ -1,0 +1,236 @@
+---
+# SonarQube Safe Upgrade Playbook
+# Usage: ansible-playbook -i inventory/hosts.yml playbooks/upgrade-sonarqube.yml -e "new_version=25.3.0.XXXXX"
+#
+# IMPORTANT: Always check SonarQube upgrade notes before upgrading:
+# https://docs.sonarsource.com/sonarqube/latest/setup-and-upgrade/upgrade-the-server/upgrade-guide/
+
+- name: Upgrade SonarQube Safely
+  hosts: sonarqube
+  become: true
+  gather_facts: true
+
+  vars:
+    backup_dir: /opt/sonarqube-backups
+    backup_retention_days: 30
+
+  pre_tasks:
+    - name: Validate new_version is provided
+      ansible.builtin.fail:
+        msg: |
+          ERROR: new_version variable is required!
+          Usage: ansible-playbook playbooks/upgrade-sonarqube.yml -e "new_version=25.3.0.XXXXX"
+
+          Find available versions at:
+          https://www.sonarsource.com/products/sonarqube/downloads/
+      when: new_version is not defined
+
+    - name: Get current installed version
+      ansible.builtin.shell: |
+        curl -s http://localhost:{{ sonarqube_port | default(9000) }}/api/system/status | grep -o '"version":"[^"]*"' | cut -d'"' -f4
+      register: current_version_result
+      changed_when: false
+
+    - name: Set current version fact
+      ansible.builtin.set_fact:
+        current_version: "{{ current_version_result.stdout }}"
+
+    - name: Display upgrade information
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          SONARQUBE UPGRADE PLAN
+          ============================================
+          Current Version: {{ current_version }}
+          Target Version:  {{ new_version }}
+
+          This playbook will:
+          1. Create database backup
+          2. Create configuration backup
+          3. Stop SonarQube service
+          4. Download new version
+          5. Install new version
+          6. Restore configuration
+          7. Start SonarQube service
+          8. Verify upgrade success
+          ============================================
+
+    - name: Check if versions are different
+      ansible.builtin.fail:
+        msg: "SonarQube is already at version {{ current_version }}. No upgrade needed."
+      when: current_version == new_version
+
+    - name: Verify SonarQube is running before upgrade
+      ansible.builtin.uri:
+        url: "http://localhost:{{ sonarqube_port | default(9000) }}/api/system/status"
+        method: GET
+      register: pre_upgrade_status
+      failed_when: pre_upgrade_status.json.status != 'UP'
+
+  tasks:
+    # === BACKUP PHASE ===
+    - name: Create backup directory
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Set backup timestamp
+      ansible.builtin.set_fact:
+        backup_timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+
+    - name: Backup PostgreSQL database
+      ansible.builtin.shell: |
+        sudo -u postgres pg_dump {{ sonarqube_db_name | default('sonarqube') }} | gzip > {{ backup_dir }}/sonarqube_db_{{ backup_timestamp }}.sql.gz
+      args:
+        creates: "{{ backup_dir }}/sonarqube_db_{{ backup_timestamp }}.sql.gz"
+
+    - name: Backup SonarQube configuration
+      ansible.builtin.archive:
+        path:
+          - /opt/sonarqube/conf/
+          - /opt/sonarqube/extensions/plugins/
+        dest: "{{ backup_dir }}/sonarqube_config_{{ backup_timestamp }}.tar.gz"
+        format: gz
+
+    - name: Display backup location
+      ansible.builtin.debug:
+        msg: |
+          Backups created:
+          - Database: {{ backup_dir }}/sonarqube_db_{{ backup_timestamp }}.sql.gz
+          - Config: {{ backup_dir }}/sonarqube_config_{{ backup_timestamp }}.tar.gz
+
+    # === STOP SERVICE ===
+    - name: Stop SonarQube service
+      ansible.builtin.systemd:
+        name: sonarqube
+        state: stopped
+
+    - name: Wait for SonarQube to stop completely
+      ansible.builtin.wait_for:
+        port: "{{ sonarqube_port | default(9000) }}"
+        state: stopped
+        timeout: 120
+
+    # === DOWNLOAD AND INSTALL ===
+    - name: Download new SonarQube version
+      ansible.builtin.get_url:
+        url: "https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-{{ new_version }}.zip"
+        dest: /tmp/sonarqube-{{ new_version }}.zip
+        mode: '0644'
+      register: download_result
+
+    - name: Move current installation to backup
+      ansible.builtin.command:
+        cmd: mv /opt/sonarqube /opt/sonarqube-{{ current_version }}-backup-{{ backup_timestamp }}
+      when: download_result is succeeded
+
+    - name: Extract new SonarQube version
+      ansible.builtin.unarchive:
+        src: /tmp/sonarqube-{{ new_version }}.zip
+        dest: /tmp
+        remote_src: true
+
+    - name: Move new version to /opt
+      ansible.builtin.command:
+        cmd: mv /tmp/sonarqube-{{ new_version }} /opt/sonarqube
+        creates: /opt/sonarqube
+
+    # === RESTORE CONFIGURATION ===
+    - name: Restore sonar.properties from backup
+      ansible.builtin.copy:
+        src: /opt/sonarqube-{{ current_version }}-backup-{{ backup_timestamp }}/conf/sonar.properties
+        dest: /opt/sonarqube/conf/sonar.properties
+        remote_src: true
+        owner: sonarqube
+        group: sonarqube
+        mode: '0600'
+
+    - name: Copy custom plugins from old installation
+      ansible.builtin.shell: |
+        if [ -d "/opt/sonarqube-{{ current_version }}-backup-{{ backup_timestamp }}/extensions/plugins" ]; then
+          cp -n /opt/sonarqube-{{ current_version }}-backup-{{ backup_timestamp }}/extensions/plugins/*.jar /opt/sonarqube/extensions/plugins/ 2>/dev/null || true
+        fi
+      changed_when: false
+
+    - name: Set ownership of SonarQube directory
+      ansible.builtin.file:
+        path: /opt/sonarqube
+        owner: sonarqube
+        group: sonarqube
+        recurse: true
+        state: directory
+
+    # === START AND VERIFY ===
+    - name: Start SonarQube service
+      ansible.builtin.systemd:
+        name: sonarqube
+        state: started
+        daemon_reload: true
+
+    - name: Wait for SonarQube to start (this may take a few minutes for DB migrations)
+      ansible.builtin.wait_for:
+        port: "{{ sonarqube_port | default(9000) }}"
+        delay: 30
+        timeout: 600
+        state: started
+
+    - name: Wait for SonarQube to be fully UP
+      ansible.builtin.uri:
+        url: "http://localhost:{{ sonarqube_port | default(9000) }}/api/system/status"
+        method: GET
+        return_content: true
+      register: post_upgrade_status
+      until: post_upgrade_status.json.status == 'UP'
+      retries: 30
+      delay: 10
+
+    - name: Clean up downloaded archive
+      ansible.builtin.file:
+        path: /tmp/sonarqube-{{ new_version }}.zip
+        state: absent
+
+    - name: Clean up old backups (older than {{ backup_retention_days }} days)
+      ansible.builtin.find:
+        paths: "{{ backup_dir }}"
+        age: "{{ backup_retention_days }}d"
+        recurse: false
+      register: old_backups
+
+    - name: Remove old backup files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_backups.files }}"
+      when: old_backups.files | length > 0
+
+  post_tasks:
+    - name: Display upgrade result
+      ansible.builtin.debug:
+        msg: |
+          ============================================
+          SONARQUBE UPGRADE COMPLETE!
+          ============================================
+          Previous Version: {{ current_version }}
+          New Version: {{ post_upgrade_status.json.version }}
+          Status: {{ post_upgrade_status.json.status }}
+
+          Access URL: http://{{ ansible_host }}:{{ sonarqube_port | default(9000) }}
+
+          Backup Location: {{ backup_dir }}
+          Old Installation: /opt/sonarqube-{{ current_version }}-backup-{{ backup_timestamp }}
+
+          IMPORTANT:
+          - Check the SonarQube logs for any migration issues
+          - Verify all plugins are compatible with the new version
+          - Test your CI/CD pipelines
+
+          To rollback if needed:
+          1. Stop SonarQube: systemctl stop sonarqube
+          2. Remove current: rm -rf /opt/sonarqube
+          3. Restore old: mv /opt/sonarqube-{{ current_version }}-backup-{{ backup_timestamp }} /opt/sonarqube
+          4. Restore DB: gunzip -c {{ backup_dir }}/sonarqube_db_{{ backup_timestamp }}.sql.gz | sudo -u postgres psql {{ sonarqube_db_name | default('sonarqube') }}
+          5. Start: systemctl start sonarqube
+          ============================================

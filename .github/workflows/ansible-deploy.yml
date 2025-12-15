@@ -21,6 +21,7 @@ on:
           - sonarqube.yml
           - check-sonarqube.yml
           - upgrade-sonarqube.yml
+          - cloudflare-tunnel.yml
           - common.yml
       target:
         description: 'Target hosts (group or host name)'

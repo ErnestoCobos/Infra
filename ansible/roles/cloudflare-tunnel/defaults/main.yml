@@ -1,0 +1,13 @@
+---
+# Cloudflare Tunnel Configuration
+# You need to create a tunnel first in Cloudflare Zero Trust dashboard
+# and get the tunnel token
+
+# Required: Get this from Cloudflare Zero Trust > Networks > Tunnels > Create
+cloudflare_tunnel_token: "{{ lookup('env', 'CLOUDFLARE_TUNNEL_TOKEN') }}"
+
+# Service to expose (default: SonarQube)
+tunnel_service_url: "http://localhost:9000"
+
+# Optional: Tunnel name for reference
+tunnel_name: "sonarqube-tunnel"
